@@ -478,7 +478,10 @@ export class GameWorld {
     view.visible = enemy.alive;
     const hover = enemy.archetype === 'flyer' ? Math.sin(elapsed * 5 + enemy.movementPhase) * 0.18 : Math.sin(elapsed * 4 + enemy.id) * 0.08;
     this.track.place(view, enemy.z, enemy.x, baseAltitude + 0.06 + enemy.altitude + hover);
-    view.rotation.y += Math.sin(elapsed * 2.2 + enemy.id) * (enemy.archetype === 'tank' ? 0.04 : 0.12);
+    const idleTurn = Math.sin(elapsed * 2.2 + enemy.id) * (enemy.archetype === 'tank' ? 0.04 : 0.12);
+    // Enemies advance toward decreasing track progress, so they must face
+    // opposite the track's forward tangent. This also corrects the Boss GLB.
+    view.rotation.y += Math.PI + idleTurn;
     const bodyMaterials = view.userData.bodyMaterials as THREE.MeshStandardMaterial[];
     for (const material of bodyMaterials) material.emissive.setHex(enemy.hitFlash > 0 ? 0xffffff : enemy.boss ? 0x5b1021 : 0x27040b);
     this.updateHealthBar(view, enemy.hp, enemy.maxHp, enemy.alive);
