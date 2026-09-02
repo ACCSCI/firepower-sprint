@@ -9,12 +9,12 @@ interface ModelSpec {
 }
 
 const MODEL_SPECS: Record<RuntimeModelKey, ModelSpec> = {
-  rifle: { url: '/models/rifle.glb', targetSize: 1.8, kind: 'weapon' },
-  gatling: { url: '/models/gatling.glb', targetSize: 2.05, kind: 'weapon' },
-  boss: { url: '/models/boss.glb', targetSize: 4.8, kind: 'character' },
-  car: { url: '/models/car.glb', targetSize: 4.2, kind: 'vehicle' },
-  plane: { url: '/models/plane.glb', targetSize: 5.5, kind: 'vehicle' },
-  submarine: { url: '/models/submarine.glb', targetSize: 4.8, kind: 'vehicle' },
+  rifle: { url: './models/rifle.glb', targetSize: 1.8, kind: 'weapon' },
+  gatling: { url: './models/gatling.glb', targetSize: 2.05, kind: 'weapon' },
+  boss: { url: './models/boss.glb', targetSize: 4.8, kind: 'character' },
+  car: { url: './models/car.glb', targetSize: 4.2, kind: 'vehicle' },
+  plane: { url: './models/plane.glb', targetSize: 5.5, kind: 'vehicle' },
+  submarine: { url: './models/submarine.glb', targetSize: 4.8, kind: 'vehicle' },
 };
 
 const idle = (callback: () => void): void => {

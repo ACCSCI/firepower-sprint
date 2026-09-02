@@ -13,17 +13,17 @@ interface PlayOptions {
 }
 
 const LEGACY_URLS: Record<LegacySoundName, string> = {
-  shot: '/audio/shot.ogg', 'hit-1': '/audio/hit-1.ogg', 'hit-2': '/audio/hit-2.ogg',
-  hurt: '/audio/hurt.ogg', defeat: '/audio/defeat.ogg', 'boss-defeat': '/audio/boss-defeat.ogg',
-  upgrade: '/audio/upgrade.ogg', select: '/audio/select.ogg', lose: '/audio/lose.ogg', victory: '/audio/victory.ogg',
+  shot: './audio/shot.ogg', 'hit-1': './audio/hit-1.ogg', 'hit-2': './audio/hit-2.ogg',
+  hurt: './audio/hurt.ogg', defeat: './audio/defeat.ogg', 'boss-defeat': './audio/boss-defeat.ogg',
+  upgrade: './audio/upgrade.ogg', select: './audio/select.ogg', lose: './audio/lose.ogg', victory: './audio/victory.ogg',
 };
 const PRO_URLS: Record<ProSoundName, string> = {
-  'pistol-1': '/audio/pro/pistol-1.ogg', 'pistol-2': '/audio/pro/pistol-2.ogg',
-  'rifle-1': '/audio/pro/rifle-1.ogg', 'rifle-2': '/audio/pro/rifle-2.ogg',
-  'gatling-burst': '/audio/pro/gatling-burst.ogg', 'run-steps': '/audio/pro/run-steps.ogg',
-  'enemy-hit': '/audio/pro/enemy-hit.ogg', 'enemy-defeat': '/audio/pro/enemy-defeat.ogg',
-  'gate-positive': '/audio/pro/gate-positive.ogg', 'gate-negative': '/audio/pro/gate-negative.ogg',
-  'boss-roar': '/audio/pro/boss-roar.ogg', 'boss-phase': '/audio/pro/boss-phase.ogg',
+  'pistol-1': './audio/pro/pistol-1.ogg', 'pistol-2': './audio/pro/pistol-2.ogg',
+  'rifle-1': './audio/pro/rifle-1.ogg', 'rifle-2': './audio/pro/rifle-2.ogg',
+  'gatling-burst': './audio/pro/gatling-burst.ogg', 'run-steps': './audio/pro/run-steps.ogg',
+  'enemy-hit': './audio/pro/enemy-hit.ogg', 'enemy-defeat': './audio/pro/enemy-defeat.ogg',
+  'gate-positive': './audio/pro/gate-positive.ogg', 'gate-negative': './audio/pro/gate-negative.ogg',
+  'boss-roar': './audio/pro/boss-roar.ogg', 'boss-phase': './audio/pro/boss-phase.ogg',
 };
 const SOUND_URLS: Record<SoundName, string> = { ...LEGACY_URLS, ...PRO_URLS };
 const WEAPON_VARIANTS: Record<WeaponType, readonly SoundName[]> = {
