@@ -8,6 +8,10 @@ export type EnemyArchetype = 'grunt' | 'tank' | 'sprinter' | 'flyer' | 'boss';
 
 export type PickupType = 'shield' | 'bomb' | 'magnet' | 'heal';
 
+export type ObstacleRewardType = 'damage' | 'fireRate' | 'crew' | 'shield';
+
+export type HazardType = 'rockfall' | 'lightning' | 'caveBlast' | 'depthCharge' | 'lavaBurst';
+
 export type BiomeType = 'surface' | 'cloud' | 'mine' | 'ocean' | 'hell';
 
 export type VehicleMode = 'onFoot' | 'car' | 'minecart' | 'plane' | 'submarine';
@@ -78,6 +82,9 @@ export interface ObstacleState {
   alive: boolean;
   hitFlash: number;
   label: string;
+  rewardType: ObstacleRewardType;
+  rewardAmount: number;
+  rewardLabel: string;
 }
 
 export interface PickupState {
@@ -111,6 +118,14 @@ export interface GateState {
   color: number;
   negative: boolean;
   used: boolean;
+  baseType: UpgradeType;
+  baseAmount: number;
+  baseLabel: string;
+  baseColor: number;
+  shootable: boolean;
+  shotCharge: number;
+  shotChargeMax: number;
+  hitFlash: number;
 }
 
 export interface BulletState {
@@ -120,7 +135,23 @@ export interface BulletState {
   vx: number;
   vz: number;
   damage: number;
+  remainingRange: number;
   alive: boolean;
+}
+
+export interface HazardState {
+  id: number;
+  waveId: number;
+  x: number;
+  z: number;
+  radius: number;
+  damage: number;
+  type: HazardType;
+  label: string;
+  color: number;
+  showLabel: boolean;
+  warned: boolean;
+  resolved: boolean;
 }
 
 export type GameEvent =
@@ -129,8 +160,13 @@ export type GameEvent =
   | { type: 'enemyDefeated'; enemyId: number; x: number; z: number; boss: boolean; combo: number }
   | { type: 'playerHit'; amount: number }
   | { type: 'gate'; label: string; color: number; negative: boolean }
+  | { type: 'gateCharged'; gateId: number; label: string; color: number; converted: boolean; progress: number }
   | { type: 'obstacleHit'; obstacleId: number; x: number; z: number; damage: number }
   | { type: 'obstacleDestroyed'; obstacleId: number; x: number; z: number }
+  | { type: 'obstacleReward'; obstacleId: number; label: string; color: number }
+  | { type: 'hazardWarning'; waveId: number; label: string; color: number }
+  | { type: 'hazardHit'; waveId: number; x: number; z: number; amount: number; label: string; color: number }
+  | { type: 'hazardAvoided'; waveId: number; x: number; z: number; score: number; color: number }
   | { type: 'obstacleCollision'; obstacleId: number; amount: number; fatal: boolean }
   | { type: 'pickup'; pickupId: number; pickupType: PickupType; amount: number }
   | {
@@ -163,12 +199,14 @@ export interface GameState {
   combo: number;
   comboTimer: number;
   bestCombo: number;
+  challengeDodges: number;
   kills: number;
   levelEnd: number;
   player: PlayerState;
   enemies: EnemyState[];
   obstacles: ObstacleState[];
   pickups: PickupState[];
+  hazards: HazardState[];
   segments: LevelSegment[];
   currentSegmentId: number;
   vehicle: VehicleMode;

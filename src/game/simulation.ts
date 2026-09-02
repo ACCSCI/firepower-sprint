@@ -1,11 +1,23 @@
 import { createInitialState } from './level';
 import { SQUAD_OFFSETS } from './squad';
-import type { EnemyState, GameState, LevelId, ObstacleState, VehicleMode } from './types';
+import type { EnemyState, GameState, GateState, HazardState, LevelId, ObstacleState, UpgradeType, VehicleMode, WeaponType } from './types';
 
 const TRACK_HALF_WIDTH = 2;
 const BULLET_SPEED = 24;
-const TARGET_RANGE = 15;
+const GATE_CENTER_DEAD_ZONE = 0.32;
 const BOMB_RADIUS = 13;
+const GATE_POSITIVE_COLOR = 0x4ade80;
+const GATE_NEUTRAL_COLOR = 0xfacc15;
+const NEGATIVE_GATE_CONVERSION: Partial<Record<UpgradeType, UpgradeType>> = {
+  damageDown: 'damage',
+  fireRateDown: 'fireRate',
+  crewDown: 'crew',
+};
+export const WEAPON_RANGE: Record<WeaponType, number> = {
+  pistol: 14,
+  rifle: 18,
+  gatling: 16,
+};
 const VEHICLE_SPEED: Record<VehicleMode, number> = {
   onFoot: 6.4,
   car: 9,
@@ -16,7 +28,15 @@ const VEHICLE_SPEED: Record<VehicleMode, number> = {
 
 type CombatTarget =
   | { kind: 'enemy'; entity: EnemyState }
-  | { kind: 'obstacle'; entity: ObstacleState };
+  | { kind: 'obstacle'; entity: ObstacleState }
+  | { kind: 'gate'; entity: GateState };
+
+export function selectGateSide(pair: readonly GateState[], playerX: number): -1 | 1 {
+  if (Math.abs(playerX) > GATE_CENTER_DEAD_ZONE) return playerX < 0 ? -1 : 1;
+  const safeChoices = pair.filter((candidate) => !candidate.negative);
+  if (safeChoices.length === 1) return safeChoices[0].side;
+  return playerX < 0 ? -1 : 1;
+}
 
 export class GameSimulation {
   state: GameState;
@@ -64,6 +84,7 @@ export class GameSimulation {
     this.resolveSegment();
     this.resolveGates();
     this.updatePickups(safeDt);
+    this.resolveHazards();
     this.resolveObstacleCollisions();
     this.updateEnemies(safeDt);
     this.autoFire();
@@ -71,6 +92,7 @@ export class GameSimulation {
 
     for (const enemy of this.state.enemies) enemy.hitFlash = Math.max(0, enemy.hitFlash - safeDt);
     for (const obstacle of this.state.obstacles) obstacle.hitFlash = Math.max(0, obstacle.hitFlash - safeDt);
+    for (const gate of this.state.gates) gate.hitFlash = Math.max(0, gate.hitFlash - safeDt);
     this.state.bullets = this.state.bullets.filter((bullet) =>
       bullet.alive && Math.abs(bullet.z - player.z) < 24,
     );
@@ -106,7 +128,7 @@ export class GameSimulation {
     for (const gate of gates) {
       if (gate.used || player.z < gate.z) continue;
       const pair = gates.filter((candidate) => candidate.pairId === gate.pairId);
-      const chosenSide = player.x < 0 ? -1 : 1;
+      const chosenSide = selectGateSide(pair, player.x);
       const chosen = pair.find((candidate) => candidate.side === chosenSide);
       pair.forEach((candidate) => { candidate.used = true; });
       if (!chosen) continue;
@@ -266,15 +288,16 @@ export class GameSimulation {
   private autoFire(): void {
     const { player } = this.state;
     if (player.shotCooldown > 0) return;
-    const target = this.findTarget();
-    if (!target) return;
+    const target = this.findTarget(WEAPON_RANGE[player.weapon]) ?? this.findTarget(Infinity);
 
     const spread = 0.085;
     for (let memberIndex = 0; memberIndex < player.crewCount; memberIndex += 1) {
       const member = SQUAD_OFFSETS[memberIndex];
       const originX = player.x + member.x;
       const originZ = player.z + 0.65 + member.z;
-      const aimAngle = Math.atan2(target.entity.x - originX, target.entity.z - originZ);
+      const aimAngle = target
+        ? Math.atan2(target.entity.x - originX, target.entity.z - originZ)
+        : 0;
       for (let index = 0; index < player.projectileCount; index += 1) {
         const angle = aimAngle + (index - (player.projectileCount - 1) / 2) * spread;
         this.state.bullets.push({
@@ -284,6 +307,7 @@ export class GameSimulation {
           vx: Math.sin(angle) * BULLET_SPEED,
           vz: Math.cos(angle) * BULLET_SPEED,
           damage: player.damage,
+          remainingRange: WEAPON_RANGE[player.weapon],
           alive: true,
         });
       }
@@ -292,13 +316,15 @@ export class GameSimulation {
     this.state.events.push({ type: 'shot', x: player.x, z: player.z });
   }
 
-  private findTarget(): CombatTarget | undefined {
+  private findTarget(range: number): CombatTarget | undefined {
     const { player } = this.state;
     const inAttackArc = (z: number): boolean => {
       const dz = z - player.z;
-      return dz >= -0.5 && dz <= TARGET_RANGE;
+      return dz >= -0.5 && dz <= range;
     };
+    const chargeableGate = this.findChargeableGate(range);
     const targets: CombatTarget[] = [
+      ...(chargeableGate ? [{ kind: 'gate' as const, entity: chargeableGate }] : []),
       ...this.state.obstacles
         .filter((item) => item.alive && inAttackArc(item.z))
         .map((entity): CombatTarget => ({ kind: 'obstacle', entity })),
@@ -311,11 +337,84 @@ export class GameSimulation {
     )[0];
   }
 
+  private resolveHazards(): void {
+    const { hazards, player } = this.state;
+    const waves = new Map<number, HazardState[]>();
+    for (const hazard of hazards) {
+      if (hazard.resolved) continue;
+      const wave = waves.get(hazard.waveId) ?? [];
+      wave.push(hazard);
+      waves.set(hazard.waveId, wave);
+    }
+
+    for (const [waveId, wave] of waves) {
+      const lead = wave[0];
+      const distance = lead.z - player.z;
+      if (!lead.warned && distance <= 20) {
+        wave.forEach((hazard) => { hazard.warned = true; });
+        this.state.events.push({
+          type: 'hazardWarning',
+          waveId,
+          label: lead.label,
+          color: lead.color,
+        });
+      }
+      if (player.z < lead.z) continue;
+
+      wave.forEach((hazard) => { hazard.resolved = true; });
+      const collision = wave.find((hazard) =>
+        Math.abs(hazard.x - player.x) < hazard.radius + 0.32,
+      );
+      if (collision) {
+        this.damagePlayer(collision.damage);
+        this.state.events.push({
+          type: 'hazardHit',
+          waveId,
+          x: collision.x,
+          z: collision.z,
+          amount: collision.damage,
+          label: collision.label,
+          color: collision.color,
+        });
+      } else {
+        const score = 200;
+        this.state.score += score;
+        this.state.challengeDodges += 1;
+        this.state.events.push({
+          type: 'hazardAvoided',
+          waveId,
+          x: player.x,
+          z: lead.z,
+          score,
+          color: 0xb9f34a,
+        });
+      }
+    }
+  }
+
+  private findChargeableGate(range: number): GateState | undefined {
+    const { gates, player } = this.state;
+    const nextGate = gates
+      .filter((gate) => !gate.used && gate.z >= player.z - 0.5)
+      .sort((a, b) => a.z - b.z)[0];
+    if (!nextGate || nextGate.z - player.z > range) return undefined;
+    const pair = gates.filter((gate) => gate.pairId === nextGate.pairId);
+    const selectedSide = selectGateSide(pair, player.x);
+    return pair.find((gate) =>
+      gate.side === selectedSide && gate.shootable && gate.shotCharge < gate.shotChargeMax,
+    );
+  }
+
   private updateBullets(dt: number): void {
     for (const bullet of this.state.bullets) {
       if (!bullet.alive) continue;
       bullet.x += bullet.vx * dt;
       bullet.z += bullet.vz * dt;
+      bullet.remainingRange -= Math.hypot(bullet.vx, bullet.vz) * dt;
+      if (bullet.remainingRange <= 0) {
+        bullet.alive = false;
+        continue;
+      }
 
       const obstacle = this.state.obstacles.find((candidate) =>
         candidate.alive &&
@@ -333,6 +432,17 @@ export class GameSimulation {
           damage: bullet.damage,
         });
         if (obstacle.hp <= 0) this.destroyObstacle(obstacle);
+        continue;
+      }
+
+      const selectedGate = this.findChargeableGate(Infinity);
+      if (
+        selectedGate &&
+        Math.abs(selectedGate.z - bullet.z) < 0.5 &&
+        Math.abs(selectedGate.x - bullet.x) < 1.08
+      ) {
+        bullet.alive = false;
+        this.chargeGate(selectedGate);
         continue;
       }
 
@@ -367,6 +477,88 @@ export class GameSimulation {
       x: obstacle.x,
       z: obstacle.z,
     });
+    this.applyObstacleReward(obstacle);
+  }
+
+  private applyObstacleReward(obstacle: ObstacleState): void {
+    const { player } = this.state;
+    const colors = {
+      damage: 0xffd24a,
+      fireRate: 0x67e8f9,
+      crew: 0x93f65b,
+      shield: 0x52a9ff,
+    } as const;
+    if (obstacle.rewardType === 'damage') player.damage += obstacle.rewardAmount;
+    if (obstacle.rewardType === 'fireRate') player.shotsPerSecond += obstacle.rewardAmount;
+    if (obstacle.rewardType === 'crew') {
+      player.crewCount = Math.min(SQUAD_OFFSETS.length, player.crewCount + obstacle.rewardAmount);
+    }
+    if (obstacle.rewardType === 'shield') {
+      player.shield = Math.min(player.shieldMax, player.shield + obstacle.rewardAmount);
+    }
+    this.state.score += 80;
+    this.state.events.push({
+      type: 'obstacleReward',
+      obstacleId: obstacle.id,
+      label: obstacle.rewardLabel,
+      color: colors[obstacle.rewardType],
+    });
+  }
+
+  private chargeGate(gate: GateState): void {
+    if (!gate.shootable || gate.used || gate.shotCharge >= gate.shotChargeMax) return;
+    const wasNegative = gate.negative;
+    gate.shotCharge = Math.min(gate.shotChargeMax, gate.shotCharge + 1);
+    gate.hitFlash = 0.14;
+    const progress = gate.shotCharge / gate.shotChargeMax;
+    const convertedType = NEGATIVE_GATE_CONVERSION[gate.baseType];
+
+    if (convertedType) {
+      const signedAmount = gate.baseAmount * (progress * 2 - 1);
+      if (signedAmount < -0.001) {
+        gate.type = gate.baseType;
+        gate.amount = this.roundGateAmount(gate.baseType, Math.abs(signedAmount));
+        gate.negative = true;
+        gate.color = progress >= 0.34 ? 0xffa94d : gate.baseColor;
+      } else if (signedAmount > 0.001) {
+        gate.type = convertedType;
+        gate.amount = this.roundGateAmount(convertedType, signedAmount);
+        gate.negative = false;
+        gate.color = GATE_POSITIVE_COLOR;
+      } else {
+        gate.type = convertedType;
+        gate.amount = 0;
+        gate.negative = false;
+        gate.color = GATE_NEUTRAL_COLOR;
+      }
+    } else {
+      gate.amount = this.roundGateAmount(gate.baseType, gate.baseAmount * (1 + progress * 0.5));
+      gate.negative = false;
+      gate.color = gate.baseColor;
+    }
+
+    gate.label = this.formatGateLabel(gate);
+    this.state.events.push({
+      type: 'gateCharged',
+      gateId: gate.id,
+      label: gate.label,
+      color: gate.color,
+      converted: wasNegative && !gate.negative,
+      progress,
+    });
+  }
+
+  private roundGateAmount(type: UpgradeType, amount: number): number {
+    if (type === 'crew' || type === 'crewDown') return amount <= 0 ? 0 : Math.max(1, Math.round(amount));
+    if (type === 'fireRate' || type === 'fireRateDown') return Math.round(amount * 100) / 100;
+    return Math.round(amount);
+  }
+
+  private formatGateLabel(gate: GateState): string {
+    if (gate.amount <= 0) return `${gate.baseLabel} 已净化`;
+    if (gate.type === 'fireRateDown') return `${gate.baseLabel} -${Math.round(gate.amount * 100)}%`;
+    if (gate.type === 'fireRate') return `${gate.baseLabel} +${gate.amount.toFixed(2).replace(/0$/, '')}`;
+    return `${gate.baseLabel} ${gate.negative ? '-' : '+'}${gate.amount}`;
   }
 
   private defeatEnemy(enemy: EnemyState): void {

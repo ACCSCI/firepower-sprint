@@ -71,15 +71,52 @@
         <small>手机拖动 / 电脑方向键</small>
       </section>
 
-      <section id="end-screen" class="screen" aria-hidden="true">
+      <section id="end-screen" class="screen screen--result" aria-hidden="true">
         <div class="result-card">
-          <span id="result-icon" class="result-card__icon">🏆</span>
-          <p id="result-kicker">BOSS 击破</p>
-          <h2 id="result-title">冲刺成功！</h2>
-          <div class="result-card__score">本局得分 <b id="score-text">0</b></div>
-          <div class="result-card__details">
-            <span>击破 <b id="kills-text">0</b></span>
-            <span>最高连击 <b id="best-combo-text">×1</b></span>
+          <div class="result-card__banner">
+            <span id="result-icon" class="result-card__icon" aria-hidden="true">🏆</span>
+            <div>
+              <p id="result-kicker">BOSS 击破</p>
+              <h2 id="result-title">任务完成</h2>
+            </div>
+          </div>
+
+          <div id="result-stars" class="result-stars" aria-label="本关评价：0 星">
+            <span class="result-star" aria-hidden="true">★</span>
+            <span class="result-star" aria-hidden="true">★</span>
+            <span class="result-star" aria-hidden="true">★</span>
+          </div>
+
+          <div class="result-loadout">
+            <span id="result-weapon-icon" class="result-loadout__icon" aria-hidden="true">🔫</span>
+            <div>
+              <small>最终武装</small>
+              <strong id="result-weapon-name">战术手枪</strong>
+              <span id="result-build-summary">单人 · 单弹道 · 10 伤害</span>
+            </div>
+          </div>
+
+          <div class="result-metrics">
+            <div class="result-metric">
+              <span class="result-metric__icon" aria-hidden="true">◷</span>
+              <span><small>冲刺用时</small><b id="result-time-text">00:00</b></span>
+              <i class="result-metric__star" aria-hidden="true">★</i>
+            </div>
+            <div class="result-metric">
+              <span class="result-metric__icon" aria-hidden="true">◎</span>
+              <span><small>击破数量</small><b id="kills-text">0</b></span>
+              <i class="result-metric__star" aria-hidden="true">★</i>
+            </div>
+            <div class="result-metric">
+              <span class="result-metric__icon" aria-hidden="true">✦</span>
+              <span><small>最高连击</small><b id="best-combo-text">×1</b></span>
+              <i class="result-metric__star" aria-hidden="true">★</i>
+            </div>
+          </div>
+
+          <div class="result-card__score">
+            <span><small>战利积分</small><b id="score-text">0</b></span>
+            <span id="result-star-count" class="result-card__score-stars">0 / 3 ★</span>
           </div>
           <button id="restart-button" class="primary-button" type="button">再来一局</button>
         </div>

@@ -3,16 +3,26 @@ import type {
   EnemyState,
   GateState,
   GameState,
+  HazardState,
   LevelId,
   LevelSegment,
   LevelSummary,
   ObstacleState,
   PickupState,
+  UpgradeType,
 } from './types';
 
-type GateChoice = Omit<GateState, 'id' | 'pairId' | 'side' | 'x' | 'z' | 'used' | 'negative'> & {
+type GateChoice = Omit<GateState,
+  | 'id' | 'pairId' | 'side' | 'x' | 'z' | 'used' | 'negative'
+  | 'baseType' | 'baseAmount' | 'baseLabel' | 'baseColor'
+  | 'shootable' | 'shotCharge' | 'shotChargeMax' | 'hitFlash'
+> & {
   negative?: boolean;
 };
+
+const CHARGEABLE_GATE_TYPES = new Set<UpgradeType>([
+  'damage', 'fireRate', 'heal', 'crew', 'damageDown', 'fireRateDown', 'crewDown',
+]);
 
 interface LevelContent {
   segments: LevelSegment[];
@@ -70,11 +80,21 @@ const obstacle = (
   label: string,
   collisionDamage = 30,
   fatal = false,
-): ObstacleState => ({
-  id, x, z, hp, maxHp: hp,
-  radius: hp >= 240 ? 1.35 : 0.95,
-  collisionDamage, fatal, alive: true, hitFlash: 0, label,
-});
+): ObstacleState => {
+  const rewards = [
+    { rewardType: 'damage', rewardAmount: 3, rewardLabel: '火力核心 +3' },
+    { rewardType: 'fireRate', rewardAmount: 0.25, rewardLabel: '超频零件 +0.25' },
+    { rewardType: 'crew', rewardAmount: 1, rewardLabel: '救援信标 +1' },
+    { rewardType: 'shield', rewardAmount: 20, rewardLabel: '护盾电池 +20' },
+  ] as const;
+  const reward = rewards[Math.abs(id) % rewards.length];
+  return {
+    id, x, z, hp, maxHp: hp,
+    radius: hp >= 240 ? 1.35 : 0.95,
+    collisionDamage, fatal, alive: true, hitFlash: 0, label,
+    ...reward,
+  };
+};
 
 const pickup = (
   id: number,
@@ -89,10 +109,38 @@ const gatePair = (
   z: number,
   left: GateChoice,
   right: GateChoice,
-): GateState[] => [
-  { negative: false, ...left, id: pairId * 2, pairId, side: -1, x: -1.75, z, used: false },
-  { negative: false, ...right, id: pairId * 2 + 1, pairId, side: 1, x: 1.75, z, used: false },
-];
+): GateState[] => {
+  // Alternate mixed positive/negative choices so players cannot learn that one
+  // physical side is always safe. Positive/positive pairs keep their authored order.
+  const shouldSwap = Boolean(left.negative) !== Boolean(right.negative) && pairId % 2 === 0;
+  const [leftChoice, rightChoice] = shouldSwap ? [right, left] : [left, right];
+  const buildGate = (choice: GateChoice, side: -1 | 1): GateState => {
+    const negative = Boolean(choice.negative);
+    const shootable = CHARGEABLE_GATE_TYPES.has(choice.type) && (negative || (pairId * 2 + (side === 1 ? 1 : 0)) % 4 === 0);
+    return {
+      negative: false,
+      ...choice,
+      id: pairId * 2 + (side === 1 ? 1 : 0),
+      pairId,
+      side,
+      x: side * 1.4,
+      z,
+      used: false,
+      baseType: choice.type,
+      baseAmount: choice.amount,
+      baseLabel: choice.label.replace(/\s[+-][\d.]+%?$/, ''),
+      baseColor: choice.color,
+      shootable,
+      shotCharge: 0,
+      shotChargeMax: shootable ? (negative ? 6 : 5) : 0,
+      hitFlash: 0,
+    };
+  };
+  return [
+    buildGate(leftChoice, -1),
+    buildGate(rightChoice, 1),
+  ];
+};
 
 const LENGTH_SCALE = 1.5;
 
@@ -456,6 +504,53 @@ const LEVEL_FACTORIES: Record<LevelId, () => LevelContent> = {
   5: levelFive,
 };
 
+const HAZARD_THEME = {
+  surface: { type: 'rockfall', label: '落石冲击', color: 0xff9a3d, damage: 24 },
+  cloud: { type: 'lightning', label: '雷暴锁定', color: 0x67e8f9, damage: 27 },
+  mine: { type: 'caveBlast', label: '矿洞爆破', color: 0xc084fc, damage: 29 },
+  ocean: { type: 'depthCharge', label: '深水炸弹', color: 0x22d3ee, damage: 27 },
+  hell: { type: 'lavaBurst', label: '熔岩喷发', color: 0xff5a36, damage: 32 },
+} as const;
+
+const HAZARD_PATTERNS = [
+  [-1.35, 0],
+  [0, 1.35],
+  [-1.35, 1.35],
+  [-1.35, 0],
+] as const;
+
+function createChallengeHazards(levelId: LevelId, content: LevelContent): HazardState[] {
+  const forbiddenZ = [...content.gates, ...content.obstacles].map((item) => item.z);
+  const fractions = [0.18, 0.37, 0.56, 0.76] as const;
+  return fractions.flatMap((fraction, waveIndex) => {
+    const desiredZ = content.levelEnd * fraction;
+    const offsets = [0, 5, -5, 9, -9, 13, -13];
+    const z = offsets
+      .map((offset) => Math.max(20, Math.min(content.levelEnd - 30, desiredZ + offset)))
+      .find((candidate) => forbiddenZ.every((blockedZ) => Math.abs(candidate - blockedZ) > 5.5))
+      ?? desiredZ;
+    const segment = content.segments.find((item, index) =>
+      z >= item.startZ && (z < item.endZ || index === content.segments.length - 1),
+    ) ?? content.segments[0];
+    const theme = HAZARD_THEME[segment.biome];
+    const waveId = levelId * 10 + waveIndex + 1;
+    return HAZARD_PATTERNS[waveIndex].map((x, laneIndex): HazardState => ({
+      id: waveId * 10 + laneIndex,
+      waveId,
+      x,
+      z,
+      radius: 0.82,
+      damage: theme.damage,
+      type: theme.type,
+      label: theme.label,
+      color: theme.color,
+      showLabel: laneIndex === 0,
+      warned: false,
+      resolved: false,
+    }));
+  });
+}
+
 export function createInitialState(levelId: LevelId = 1): GameState {
   const content = LEVEL_FACTORIES[levelId]();
   const firstSegment = content.segments[0];
@@ -467,6 +562,7 @@ export function createInitialState(levelId: LevelId = 1): GameState {
     combo: 1,
     comboTimer: 0,
     bestCombo: 1,
+    challengeDodges: 0,
     kills: 0,
     levelEnd: content.levelEnd,
     player: {
@@ -478,6 +574,7 @@ export function createInitialState(levelId: LevelId = 1): GameState {
     enemies: content.enemies,
     obstacles: content.obstacles,
     pickups: content.pickups,
+    hazards: createChallengeHazards(levelId, content),
     segments: content.segments,
     currentSegmentId: firstSegment.id,
     vehicle: firstSegment.vehicle,

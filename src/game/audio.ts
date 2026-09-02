@@ -182,6 +182,19 @@ export class GameAudio {
     [0, 0.12, 0.24].forEach((delay, i) => window.setTimeout(() => this.tone([523, 659, 784][i], [659, 784, 1046][i], 0.22, 'triangle', 0.12), delay * 1000));
   }
 
+  hazardWarning(): void {
+    if (!this.canPlay('hazard-warning', 0.7)) return;
+    this.tone(720, 310, 0.16, 'square', 0.085);
+    window.setTimeout(() => this.tone(660, 260, 0.18, 'square', 0.075), 210);
+  }
+
+  resultStar(index: number): void {
+    const notes = [659, 784, 988];
+    const note = notes[Math.max(0, Math.min(notes.length - 1, index))];
+    this.tone(note, note * 1.25, 0.18, 'triangle', 0.1);
+    window.setTimeout(() => this.tone(note * 1.5, note * 1.8, 0.12, 'sine', 0.055), 75);
+  }
+
   private async loadSounds(): Promise<void> {
     if (!this.context) return;
     await Promise.all(Object.entries(SOUND_URLS).map(async ([name, url]) => {

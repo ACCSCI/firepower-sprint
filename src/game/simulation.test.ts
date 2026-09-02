@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState, LEVEL_SUMMARIES } from './level';
-import { GameSimulation } from './simulation';
+import { GameSimulation, WEAPON_RANGE } from './simulation';
 import { TrackPath } from './track';
 import type { LevelId } from './types';
 
@@ -29,7 +29,8 @@ describe('GameSimulation', () => {
     game.start();
     game.state.gates.filter((gate) => gate.z < 82.5).forEach((gate) => { gate.used = true; });
     game.state.player.z = 82.4;
-    game.setMove(1);
+    const negativeGate = game.state.gates.find((gate) => gate.pairId === 2 && gate.negative)!;
+    game.setMove(negativeGate.side);
     let sawNegativeEvent = false;
     for (let index = 0; index < 12; index += 1) {
       game.update(0.05);
@@ -44,7 +45,8 @@ describe('GameSimulation', () => {
     game.start();
     game.state.gates.filter((gate) => gate.z < 82.5).forEach((gate) => { gate.used = true; });
     game.state.player.z = 82.4;
-    game.setMove(-1);
+    const rifleGate = game.state.gates.find((gate) => gate.pairId === 2 && gate.type === 'weaponRifle')!;
+    game.setMove(rifleGate.side);
     for (let index = 0; index < 12; index += 1) game.update(0.05);
     expect(game.state.player.weapon).toBe('rifle');
     expect(game.state.player.damage).toBe(17);
@@ -58,6 +60,46 @@ describe('GameSimulation', () => {
     game.update(0.016);
     expect(game.state.bullets.length).toBeGreaterThan(0);
     expect(game.state.events.some((event) => event.type === 'shot')).toBe(true);
+  });
+
+  it('keeps firing forward when no target is in range', () => {
+    const game = new GameSimulation();
+    game.start();
+    game.state.enemies.forEach((enemy) => { enemy.alive = false; });
+    game.state.obstacles.forEach((obstacle) => { obstacle.alive = false; });
+    game.update(0.016);
+    expect(game.state.bullets).toHaveLength(1);
+    expect(game.state.bullets[0].vx).toBe(0);
+    expect(game.state.bullets[0].vz).toBeGreaterThan(0);
+    expect(game.state.events.some((event) => event.type === 'shot')).toBe(true);
+  });
+
+  it('expires bullets at the current weapon range', () => {
+    const game = new GameSimulation();
+    game.start();
+    game.state.enemies.forEach((enemy) => { enemy.alive = false; });
+    game.state.obstacles.forEach((obstacle) => { obstacle.alive = false; });
+    game.update(0.016);
+    const bulletId = game.state.bullets[0].id;
+    expect(game.state.bullets[0].remainingRange).toBeLessThan(WEAPON_RANGE.pistol);
+    game.state.player.shotCooldown = 999;
+    for (let index = 0; index < 14; index += 1) game.update(0.05);
+    expect(game.state.bullets.some((bullet) => bullet.id === bulletId)).toBe(false);
+  });
+
+  it('gives each weapon a distinct effective range', () => {
+    expect(WEAPON_RANGE.rifle).toBeGreaterThan(WEAPON_RANGE.gatling);
+    expect(WEAPON_RANGE.gatling).toBeGreaterThan(WEAPON_RANGE.pistol);
+  });
+
+  it('chooses the non-negative gate while the player is in the center safety zone', () => {
+    const game = new GameSimulation();
+    game.start();
+    game.state.gates.filter((gate) => gate.z < 82.5).forEach((gate) => { gate.used = true; });
+    game.state.player.z = 82.4;
+    game.update(0.05);
+    expect(game.state.player.weapon).toBe('rifle');
+    expect(game.state.events.some((event) => event.type === 'gate' && event.negative)).toBe(false);
   });
 
   it('fires one projectile per unlocked trajectory', () => {
@@ -117,13 +159,81 @@ describe('GameSimulation', () => {
     obstacle.maxHp = 10;
     game.state.player.z = 5;
     game.state.player.damage = 20;
+    const initialFireRate = game.state.player.shotsPerSecond;
     let destroyed = false;
+    let rewarded = false;
     for (let index = 0; index < 8; index += 1) {
       game.update(0.05);
       destroyed ||= game.state.events.some((event) => event.type === 'obstacleDestroyed');
+      rewarded ||= game.state.events.some((event) => event.type === 'obstacleReward');
     }
     expect(obstacle.alive).toBe(false);
     expect(destroyed).toBe(true);
+    expect(rewarded).toBe(true);
+    expect(game.state.player.shotsPerSecond).toBe(initialFireRate + obstacle.rewardAmount);
+  });
+
+  it('turns a selected negative gate into a positive upgrade by shooting it', () => {
+    const game = new GameSimulation();
+    game.start();
+    game.state.enemies.forEach((enemy) => { enemy.alive = false; });
+    game.state.obstacles.forEach((obstacle) => { obstacle.alive = false; });
+    const pair = game.state.gates.filter((gate) => gate.pairId === 2);
+    const negativeGate = pair.find((gate) => gate.negative)!;
+    game.state.gates.filter((gate) => gate.z < negativeGate.z).forEach((gate) => { gate.used = true; });
+    game.state.player.weapon = 'rifle';
+    game.state.player.shotsPerSecond = 12;
+    game.state.player.z = negativeGate.z - 12;
+    game.setMove(negativeGate.side);
+    let converted = false;
+    for (let index = 0; index < 32 && negativeGate.shotCharge < negativeGate.shotChargeMax; index += 1) {
+      game.update(0.05);
+      converted ||= game.state.events.some((event) => event.type === 'gateCharged' && event.converted);
+    }
+    expect(negativeGate.shotCharge).toBe(negativeGate.shotChargeMax);
+    expect(negativeGate.negative).toBe(false);
+    expect(negativeGate.type).toBe('damage');
+    expect(negativeGate.amount).toBeGreaterThan(0);
+    expect(negativeGate.label).toContain('+');
+    expect(converted).toBe(true);
+  });
+
+  it('charges only the currently selected gate when both choices can be shot', () => {
+    const game = new GameSimulation(2);
+    game.start();
+    game.state.enemies.forEach((enemy) => { enemy.alive = false; });
+    game.state.obstacles.forEach((obstacle) => { obstacle.alive = false; });
+    const pair = game.state.gates.filter((gate) => gate.pairId === 104);
+    const selected = pair.find((gate) => gate.negative)!;
+    const other = pair.find((gate) => gate.id !== selected.id)!;
+    other.shootable = true;
+    other.shotChargeMax = 5;
+    game.state.gates.filter((gate) => gate.z < selected.z).forEach((gate) => { gate.used = true; });
+    game.state.player.weapon = 'rifle';
+    game.state.player.shotsPerSecond = 12;
+    game.state.player.z = selected.z - 12;
+    game.setMove(selected.side);
+    for (let index = 0; index < 22; index += 1) game.update(0.05);
+    expect(selected.shotCharge).toBeGreaterThan(0);
+    expect(other.shotCharge).toBe(0);
+  });
+
+  it('amplifies authored positive gates when their charge bar is filled', () => {
+    const game = new GameSimulation();
+    game.start();
+    game.state.enemies.forEach((enemy) => { enemy.alive = false; });
+    game.state.obstacles.forEach((obstacle) => { obstacle.alive = false; });
+    const gate = game.state.gates.find((candidate) => candidate.pairId === 4 && candidate.shootable)!;
+    const baseAmount = gate.baseAmount;
+    game.state.gates.filter((candidate) => candidate.z < gate.z).forEach((candidate) => { candidate.used = true; });
+    game.state.player.weapon = 'rifle';
+    game.state.player.shotsPerSecond = 12;
+    game.state.player.z = gate.z - 12;
+    game.setMove(gate.side);
+    for (let index = 0; index < 32 && gate.shotCharge < gate.shotChargeMax; index += 1) game.update(0.05);
+    expect(gate.shotCharge).toBe(gate.shotChargeMax);
+    expect(gate.amount).toBeGreaterThan(baseAmount);
+    expect(gate.label).toContain('+');
   });
 
   it('applies obstacle collision damage and consumes the obstacle', () => {
@@ -166,6 +276,51 @@ describe('GameSimulation', () => {
     game.update(0.05);
     expect(game.state.player.hp).toBe(0);
     expect(game.state.status).toBe('lost');
+  });
+
+  it('warns before a hazard wave and does not repeat the warning', () => {
+    const game = new GameSimulation();
+    game.start();
+    const firstWave = game.state.hazards.filter((hazard) => hazard.waveId === game.state.hazards[0].waveId);
+    game.state.player.z = firstWave[0].z - 20.2;
+    game.update(0.05);
+    expect(firstWave.every((hazard) => hazard.warned)).toBe(true);
+    expect(game.state.events.filter((event) => event.type === 'hazardWarning')).toHaveLength(1);
+    game.update(0.05);
+    expect(game.state.events.some((event) => event.type === 'hazardWarning')).toBe(false);
+  });
+
+  it('damages the player once when entering a marked hazard lane', () => {
+    const game = new GameSimulation();
+    game.start();
+    const target = game.state.hazards[0];
+    const wave = game.state.hazards.filter((hazard) => hazard.waveId === target.waveId);
+    game.state.player.x = target.x;
+    game.setMove(target.x / 2);
+    game.state.player.z = target.z - 0.1;
+    game.update(0.05);
+    expect(game.state.player.hp).toBe(100 - target.damage);
+    expect(wave.every((hazard) => hazard.resolved)).toBe(true);
+    expect(game.state.events.some((event) => event.type === 'hazardHit')).toBe(true);
+    game.update(0.05);
+    expect(game.state.player.hp).toBe(100 - target.damage);
+  });
+
+  it('awards a perfect dodge for taking the open lane', () => {
+    const game = new GameSimulation();
+    game.start();
+    const waveId = game.state.hazards[0].waveId;
+    const wave = game.state.hazards.filter((hazard) => hazard.waveId === waveId);
+    const safeLane = [-1.35, 0, 1.35].find((lane) => wave.every((hazard) => hazard.x !== lane))!;
+    game.state.gates.forEach((gate) => { gate.used = true; });
+    game.state.player.x = safeLane;
+    game.setMove(safeLane / 2);
+    game.state.player.z = wave[0].z - 0.1;
+    game.update(0.05);
+    expect(game.state.player.hp).toBe(100);
+    expect(game.state.challengeDodges).toBe(1);
+    expect(game.state.score).toBe(200);
+    expect(game.state.events).toContainEqual(expect.objectContaining({ type: 'hazardAvoided', score: 200 }));
   });
 
   it('collects shield, magnet and healing pickups', () => {
@@ -306,6 +461,15 @@ describe('GameSimulation', () => {
     expect(new Set(levels.flatMap((level) => level.obstacles.map((item) => item.label))).size).toBe(45);
   });
 
+  it('alternates negative gates across both sides of the track', () => {
+    const negativeSides = ([1, 2, 3, 4, 5] as LevelId[])
+      .flatMap((levelId) => createInitialState(levelId).gates)
+      .filter((gate) => gate.negative)
+      .map((gate) => gate.side);
+    expect(negativeSides).toContain(-1);
+    expect(negativeSides).toContain(1);
+  });
+
   it('ships fifteen regular enemies, a boss and all five archetypes in every level', () => {
     for (const levelId of [1, 2, 3, 4, 5] as LevelId[]) {
       const state = createInitialState(levelId);
@@ -363,6 +527,45 @@ describe('GameSimulation', () => {
         expect(target.hp).toBeGreaterThan(0);
         expect(target.maxHp).toBe(target.hp);
       }
+    }
+  });
+
+  it('assigns a visible combat reward to every destructible obstacle', () => {
+    const rewards = new Set<string>();
+    for (const levelId of [1, 2, 3, 4, 5] as LevelId[]) {
+      for (const obstacle of createInitialState(levelId).obstacles) {
+        expect(obstacle.rewardAmount).toBeGreaterThan(0);
+        expect(obstacle.rewardLabel).toContain('+');
+        rewards.add(obstacle.rewardType);
+      }
+    }
+    expect(rewards).toEqual(new Set(['damage', 'fireRate', 'crew', 'shield']));
+  });
+
+  it('adds four fair two-lane hazard waves to every campaign', () => {
+    const hazardTypes = new Set<string>();
+    for (const levelId of [1, 2, 3, 4, 5] as LevelId[]) {
+      const state = createInitialState(levelId);
+      const waveIds = [...new Set(state.hazards.map((hazard) => hazard.waveId))];
+      expect(waveIds).toHaveLength(4);
+      expect(state.hazards).toHaveLength(8);
+      for (const waveId of waveIds) {
+        const wave = state.hazards.filter((hazard) => hazard.waveId === waveId);
+        expect(wave).toHaveLength(2);
+        expect(new Set(wave.map((hazard) => hazard.x)).size).toBe(2);
+        expect([-1.35, 0, 1.35].filter((lane) => wave.every((hazard) => hazard.x !== lane))).toHaveLength(1);
+        expect([...state.gates, ...state.obstacles].every((item) => Math.abs(item.z - wave[0].z) > 5.5)).toBe(true);
+      }
+      state.hazards.forEach((hazard) => hazardTypes.add(hazard.type));
+    }
+    expect(hazardTypes).toEqual(new Set(['rockfall', 'lightning', 'caveBlast', 'depthCharge', 'lavaBurst']));
+  });
+
+  it('makes every negative numeric gate shootable and convertible', () => {
+    for (const levelId of [1, 2, 3, 4, 5] as LevelId[]) {
+      const negativeGates = createInitialState(levelId).gates.filter((gate) => gate.negative);
+      expect(negativeGates.length).toBeGreaterThan(0);
+      expect(negativeGates.every((gate) => gate.shootable && gate.shotChargeMax > 0)).toBe(true);
     }
   });
 

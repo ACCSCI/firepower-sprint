@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { RuntimeModelLibrary, type RuntimeModelKey } from './asset-loader';
 import { EnvironmentVisual } from './environment';
+import { selectGateSide } from './simulation';
 import { SQUAD_OFFSETS } from './squad';
 import { TrackPath } from './track';
 import type {
-  BiomeType, EnemyState, GameEvent, GameState, GateState, ObstacleState,
+  BiomeType, EnemyState, GameEvent, GameState, GateState, HazardState, ObstacleState,
   PickupState, VehicleMode, WeaponType,
 } from './types';
 
@@ -23,6 +24,7 @@ export class GameWorld {
   private readonly obstacleViews = new Map<number, THREE.Group>();
   private readonly pickupViews = new Map<number, THREE.Group>();
   private readonly gateViews = new Map<number, THREE.Group>();
+  private readonly hazardViews = new Map<number, THREE.Group>();
   private readonly bulletViews = new Map<number, THREE.Mesh>();
   private readonly bulletPool: THREE.Mesh[] = [];
   private readonly particles: Particle[] = [];
@@ -72,6 +74,7 @@ export class GameWorld {
     state.enemies.forEach((item) => this.addEnemy(item));
     state.obstacles.forEach((item) => this.addObstacle(item));
     state.pickups.forEach((item) => this.addPickup(item));
+    state.hazards.forEach((item) => this.addHazard(item));
     this.models.start((key) => this.applyLoadedModel(key));
     this.camera.position.set(0, 7.6, -8.5);
     this.camera.lookAt(0, 1.1, 6);
@@ -104,11 +107,34 @@ export class GameWorld {
       ally.visible = index < state.player.crewCount;
       if (ally.visible) this.updateSoldier(ally, index, state.player, state.vehicle, elapsed);
     }
+    const nextGate = state.gates
+      .filter((gate) => !gate.used && gate.z >= state.player.z - 0.5)
+      .sort((a, b) => a.z - b.z)[0];
+    const nextPair = nextGate
+      ? state.gates.filter((gate) => gate.pairId === nextGate.pairId)
+      : [];
+    const previewSide = nextPair.length ? selectGateSide(nextPair, state.player.x) : 0;
     for (const gate of state.gates) {
       const view = this.gateViews.get(gate.id) ?? this.addGate(gate);
       view.visible = !gate.used;
       this.track.place(view, gate.z, gate.x, baseAltitude);
-      (view.userData.halo as THREE.Mesh).scale.setScalar(1 + Math.sin(elapsed * 4 + gate.id) * 0.035);
+      const selected = gate.pairId === nextGate?.pairId && gate.side === previewSide;
+      const frameMaterial = view.userData.frameMaterial as THREE.MeshStandardMaterial;
+      const halo = view.userData.halo as THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+      const selector = view.userData.selector as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+      const displayColor = gate.hitFlash > 0 ? 0xffffff : gate.color;
+      frameMaterial.color.setHex(gate.color);
+      frameMaterial.emissive.setHex(displayColor);
+      halo.material.color.setHex(gate.color);
+      selector.material.emissive.setHex(gate.color);
+      frameMaterial.opacity = selected ? 0.98 : 0.66;
+      frameMaterial.emissiveIntensity = selected ? 0.9 : 0.22;
+      halo.material.opacity = selected ? 0.38 : 0.1;
+      halo.scale.setScalar((selected ? 1.04 : 1) + Math.sin(elapsed * 4 + gate.id) * 0.025);
+      selector.visible = selected;
+      selector.position.y = 3.4 + Math.sin(elapsed * 7) * 0.1;
+      this.updateGateLabel(view, gate);
+      this.updateHealthBar(view, gate.shotCharge, gate.shotChargeMax, gate.shootable && !gate.used);
     }
     for (const enemy of state.enemies) this.updateEnemy(this.enemyViews.get(enemy.id) ?? this.addEnemy(enemy), enemy, elapsed, baseAltitude);
     for (const obstacle of state.obstacles) this.updateObstacle(this.obstacleViews.get(obstacle.id) ?? this.addObstacle(obstacle), obstacle, elapsed, baseAltitude);
@@ -117,6 +143,9 @@ export class GameWorld {
       view.visible = !pickup.collected;
       this.track.place(view, pickup.z, pickup.x, baseAltitude + 0.9 + Math.sin(elapsed * 3 + pickup.id) * 0.18);
       view.rotation.y += elapsed * 1.7 + pickup.id;
+    }
+    for (const hazard of state.hazards) {
+      this.updateHazard(this.hazardViews.get(hazard.id) ?? this.addHazard(hazard), hazard, elapsed, baseAltitude);
     }
     this.updateBullets(state);
     this.handleEvents(state.events);
@@ -154,6 +183,7 @@ export class GameWorld {
     this.obstacleViews.clear();
     this.pickupViews.clear();
     this.gateViews.clear();
+    this.hazardViews.clear();
     this.bulletViews.clear();
     this.bulletPool.length = 0;
     this.particles.length = 0;
@@ -514,9 +544,9 @@ export class GameWorld {
       model.add(this.mesh(new THREE.BoxGeometry(0.16, 1.3, obstacle.radius * 1.5), metal, [0, 0.72, 0], false));
     }
     group.add(model);
-    const label = this.createTextSprite(obstacle.label, obstacle.fatal ? 0xff3f56 : 0xffb629);
+    const label = this.createTextSprite(`${obstacle.label} · 击破得${obstacle.rewardLabel}`, obstacle.fatal ? 0xff3f56 : 0xffb629);
     label.position.set(0, obstacle.radius * 2 + 0.8, 0.1);
-    label.scale.set(2.2, 0.68, 1);
+    label.scale.set(3.35, 0.8, 1);
     group.add(label);
     this.addHealthBar(group, 1.4, obstacle.radius * 2 + 0.3, obstacle.fatal ? 0xff6a58 : 0x5dff7b);
     group.userData.model = model;
@@ -769,19 +799,106 @@ export class GameWorld {
   private addEnemy(item: EnemyState): THREE.Group { const view = this.createEnemy(item); this.enemyViews.set(item.id, view); this.scene.add(view); if (item.boss && this.models.clone('boss')) this.applyLoadedModel('boss'); return view; }
   private addObstacle(item: ObstacleState): THREE.Group { const view = this.createObstacle(item); this.obstacleViews.set(item.id, view); this.scene.add(view); return view; }
   private addPickup(item: PickupState): THREE.Group { const view = this.createPickup(item); this.pickupViews.set(item.id, view); this.scene.add(view); return view; }
+  private addHazard(item: HazardState): THREE.Group { const view = this.createHazard(item); this.hazardViews.set(item.id, view); this.scene.add(view); return view; }
+
+  private createHazard(hazard: HazardState): THREE.Group {
+    const group = new THREE.Group();
+    this.track.place(group, hazard.z, hazard.x);
+    const discMaterial = new THREE.MeshBasicMaterial({
+      color: hazard.color,
+      transparent: true,
+      opacity: 0.2,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const ringMaterial = new THREE.MeshBasicMaterial({
+      color: hazard.color,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+    });
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(hazard.radius, 28), discMaterial);
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.y = 0.045;
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(hazard.radius, 0.075, 7, 28), ringMaterial);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.065;
+    const cross = new THREE.Group();
+    for (const rotation of [0, Math.PI / 2]) {
+      const line = this.mesh(new THREE.BoxGeometry(hazard.radius * 1.45, 0.035, 0.075), ringMaterial, [0, 0.08, 0], false);
+      line.rotation.y = rotation;
+      cross.add(line);
+    }
+    const beaconMaterial = new THREE.MeshBasicMaterial({ color: hazard.color, transparent: true, opacity: 0.2, depthWrite: false });
+    const beacon = new THREE.Mesh(new THREE.CylinderGeometry(0.04, hazard.radius * 0.48, 5.2, 16, 1, true), beaconMaterial);
+    beacon.position.y = 2.6;
+    group.add(disc, ring, cross, beacon);
+    if (hazard.showLabel) {
+      const label = this.createTextSprite(`⚠ ${hazard.label} · 躲开红区`, hazard.color);
+      label.position.set(0.7, 2.15, 0.08);
+      label.scale.set(2.45, 0.76, 1);
+      group.add(label);
+    }
+    group.userData.discMaterial = discMaterial;
+    group.userData.ringMaterial = ringMaterial;
+    group.userData.beaconMaterial = beaconMaterial;
+    group.userData.ring = ring;
+    group.userData.waveId = hazard.waveId;
+    return group;
+  }
+
+  private updateHazard(view: THREE.Group, hazard: HazardState, elapsed: number, baseAltitude: number): void {
+    view.visible = !hazard.resolved;
+    if (!view.visible) return;
+    this.track.place(view, hazard.z, hazard.x, baseAltitude + 0.03);
+    const pulse = 0.5 + Math.sin(elapsed * 4.2 + hazard.id) * 0.5;
+    const ring = view.userData.ring as THREE.Mesh;
+    ring.scale.setScalar(0.92 + pulse * 0.13);
+    (view.userData.discMaterial as THREE.MeshBasicMaterial).opacity = hazard.warned ? 0.28 + pulse * 0.16 : 0.12 + pulse * 0.08;
+    (view.userData.ringMaterial as THREE.MeshBasicMaterial).opacity = hazard.warned ? 0.72 + pulse * 0.26 : 0.42 + pulse * 0.22;
+    (view.userData.beaconMaterial as THREE.MeshBasicMaterial).opacity = hazard.warned ? 0.12 + pulse * 0.2 : 0.05;
+  }
 
   private createGate(gate: GateState): THREE.Group {
     const group = new THREE.Group();
     this.track.place(group, gate.z, gate.x);
     const material = new THREE.MeshStandardMaterial({ color: gate.color, emissive: gate.color, emissiveIntensity: 0.25, transparent: true, opacity: 0.82, roughness: 0.36 });
-    for (const x of [-1.55, 1.55]) group.add(this.mesh(new THREE.BoxGeometry(0.16, 2.75, 0.16), material, [x, 1.38, 0], false));
-    group.add(this.mesh(new THREE.BoxGeometry(3.25, 0.16, 0.16), material, [0, 2.72, 0], false));
-    const halo = new THREE.Mesh(new THREE.PlaneGeometry(3.05, 2.45), new THREE.MeshBasicMaterial({ color: gate.color, transparent: true, opacity: 0.15, side: THREE.DoubleSide }));
+    for (const x of [-1.12, 1.12]) group.add(this.mesh(new THREE.BoxGeometry(0.16, 2.75, 0.16), material, [x, 1.38, 0], false));
+    group.add(this.mesh(new THREE.BoxGeometry(2.4, 0.16, 0.16), material, [0, 2.72, 0], false));
+    const halo = new THREE.Mesh(new THREE.PlaneGeometry(2.16, 2.45), new THREE.MeshBasicMaterial({ color: gate.color, transparent: true, opacity: 0.1, side: THREE.DoubleSide }));
     halo.position.y = 1.38;
     group.add(halo);
+    const selector = this.mesh(
+      new THREE.OctahedronGeometry(0.24, 0),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: gate.color, emissiveIntensity: 2.2 }),
+      [0, 3.08, 0],
+      false,
+    );
+    selector.visible = false;
+    group.add(selector);
     group.userData.halo = halo;
+    group.userData.frameMaterial = material;
+    group.userData.selector = selector;
     const label = this.createTextSprite(gate.label, gate.color); label.position.set(0, 2.15, 0.08); group.add(label);
+    group.userData.label = label;
+    group.userData.labelText = gate.label;
+    if (gate.shootable) this.addHealthBar(group, 1.75, 2.93, 0x67e8f9);
     return group;
+  }
+
+  private updateGateLabel(view: THREE.Group, gate: GateState): void {
+    if (view.userData.labelText === gate.label) return;
+    const previous = view.userData.label as THREE.Sprite | undefined;
+    if (previous) {
+      view.remove(previous);
+      previous.material.map?.dispose();
+      previous.material.dispose();
+    }
+    const label = this.createTextSprite(gate.label, gate.color);
+    label.position.set(0, 2.15, 0.08);
+    view.add(label);
+    view.userData.label = label;
+    view.userData.labelText = gate.label;
   }
 
   private createTextSprite(text: string, color: number): THREE.Sprite {
@@ -790,7 +907,8 @@ export class GameWorld {
     if (context) {
       context.fillStyle = 'rgba(16,20,45,.84)'; context.beginPath(); context.roundRect(18, 16, 476, 128, 32); context.fill();
       context.strokeStyle = `#${color.toString(16).padStart(6, '0')}`; context.lineWidth = 8; context.stroke();
-      context.fillStyle = '#fff'; context.font = '700 58px system-ui,sans-serif'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(text, 256, 82);
+      const fontSize = Math.max(30, Math.min(58, Math.floor(750 / Math.max(8, text.length))));
+      context.fillStyle = '#fff'; context.font = `700 ${fontSize}px system-ui,sans-serif`; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(text, 256, 82);
     }
     const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
@@ -813,6 +931,12 @@ export class GameWorld {
         this.cameraShake = Math.max(this.cameraShake, event.boss ? 0.42 : 0.09);
       }
       if (event.type === 'gate') this.spawnBurst(this.player.position.x, this.player.position.z + 0.5, event.color, 14);
+      if (event.type === 'gateCharged') {
+        const position = this.gateViews.get(event.gateId)?.position ?? this.player.position;
+        this.spawnBurst(position.x, position.z, event.color, event.converted ? 16 : 5, position.y + 1.4);
+        if (event.converted) this.spawnFloatingText('负面已转正', position.x, position.z, event.color, position.y + 2.7);
+        else if (event.progress >= 1) this.spawnFloatingText('强化已充满', position.x, position.z, event.color, position.y + 2.7);
+      }
       if (event.type === 'playerHit') { this.spawnBurst(this.player.position.x, this.player.position.z, 0xff3b5c, 8); this.spawnFloatingText(`-${event.amount}`, this.player.position.x, this.player.position.z, 0xff5470); this.cameraShake = Math.max(this.cameraShake, 0.22); }
       if (event.type === 'obstacleHit') {
         const position = this.obstacleViews.get(event.obstacleId)?.position ?? this.player.position;
@@ -825,6 +949,27 @@ export class GameWorld {
         this.spawnBurst(position.x, position.z, 0xff713b, 18, position.y + 0.8);
         this.spawnFloatingText('路障击破', position.x, position.z, 0xffd36b, position.y + 1.8);
         this.cameraShake = Math.max(this.cameraShake, 0.18);
+      }
+      if (event.type === 'obstacleReward') {
+        this.spawnBurst(this.player.position.x, this.player.position.z, event.color, 18, this.player.position.y + 0.9);
+        this.spawnFloatingText(event.label, this.player.position.x, this.player.position.z, event.color, this.player.position.y + 2.5);
+      }
+      if (event.type === 'hazardWarning') {
+        const view = [...this.hazardViews.values()].find((item) => item.userData.waveId === event.waveId);
+        const position = view?.position ?? this.player.position;
+        this.spawnFloatingText(`⚠ ${event.label}`, position.x, position.z, event.color, position.y + 2.5);
+        this.spawnBurst(position.x, position.z, event.color, 9, position.y + 0.3);
+      }
+      if (event.type === 'hazardHit') {
+        const view = [...this.hazardViews.values()].find((item) => item.userData.waveId === event.waveId);
+        const position = view?.position ?? this.player.position;
+        this.spawnBurst(position.x, position.z, event.color, 22, position.y + 0.8);
+        this.spawnFloatingText(`${event.label} -${event.amount}`, this.player.position.x, this.player.position.z, 0xff6b5d, this.player.position.y + 2.4);
+        this.cameraShake = Math.max(this.cameraShake, 0.34);
+      }
+      if (event.type === 'hazardAvoided') {
+        this.spawnBurst(this.player.position.x, this.player.position.z, event.color, 15, this.player.position.y + 0.7);
+        this.spawnFloatingText(`完美闪避 +${event.score}`, this.player.position.x, this.player.position.z, event.color, this.player.position.y + 2.4);
       }
       if (event.type === 'obstacleCollision') this.cameraShake = Math.max(this.cameraShake, event.fatal ? 0.48 : 0.3);
       if (event.type === 'pickup') { const colors = { shield: 0x41d9ff, bomb: 0xff713b, magnet: 0xd65cff, heal: 0x53f28a } as const; this.spawnBurst(this.player.position.x, this.player.position.z, colors[event.pickupType], 18); }

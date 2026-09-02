@@ -2,7 +2,7 @@ import './style.css';
 import { GameAudio } from './game/audio';
 import { InputController } from './game/input';
 import { LEVEL_SUMMARIES } from './game/level';
-import { GameSimulation } from './game/simulation';
+import { GameSimulation, WEAPON_RANGE } from './game/simulation';
 import type { GameStatus, LevelId } from './game/types';
 import { GameWorld } from './game/world';
 
@@ -48,6 +48,15 @@ const resultTitle = requiredElement<HTMLElement>('#result-title');
 const scoreText = requiredElement<HTMLElement>('#score-text');
 const killsText = requiredElement<HTMLElement>('#kills-text');
 const bestComboText = requiredElement<HTMLElement>('#best-combo-text');
+const resultTimeText = requiredElement<HTMLElement>('#result-time-text');
+const resultWeaponIcon = requiredElement<HTMLElement>('#result-weapon-icon');
+const resultWeaponName = requiredElement<HTMLElement>('#result-weapon-name');
+const resultBuildSummary = requiredElement<HTMLElement>('#result-build-summary');
+const resultStars = [...document.querySelectorAll<HTMLElement>('.result-star')];
+const resultMetricRows = [...document.querySelectorAll<HTMLElement>('.result-metric')];
+const resultMetricStars = [...document.querySelectorAll<HTMLElement>('.result-metric__star')];
+const resultStarsGroup = requiredElement<HTMLElement>('#result-stars');
+const resultStarCount = requiredElement<HTMLElement>('#result-star-count');
 const soundButton = requiredElement<HTMLButtonElement>('#sound-button');
 
 const simulation = new GameSimulation();
@@ -70,6 +79,8 @@ let announcementTimer = 0;
 let pageActive = document.visibilityState === 'visible';
 let bossIntroduced = false;
 let bossPhased = false;
+let scoreAnimationFrame = 0;
+const resultTimers: number[] = [];
 
 const biomeLabels = {
   surface: '地表',
@@ -146,6 +157,8 @@ function rebuildWorld(): void {
 }
 
 function begin(levelId: LevelId): void {
+  resultTimers.splice(0).forEach((timer) => window.clearTimeout(timer));
+  window.cancelAnimationFrame(scoreAnimationFrame);
   audio.start();
   audio.select();
   selectLevel(levelId);
@@ -154,6 +167,7 @@ function begin(levelId: LevelId): void {
   startScreen.classList.remove('screen--visible');
   startScreen.setAttribute('aria-hidden', 'true');
   endScreen.classList.remove('screen--visible');
+  endScreen.classList.remove('screen--won', 'screen--lost', 'result--revealing');
   endScreen.setAttribute('aria-hidden', 'true');
   previousStatus = 'running';
   hintTimer = 3.5;
@@ -208,7 +222,7 @@ function updateHud(): void {
   const segment = state.segments.find((item) => item.id === state.currentSegmentId) ?? state.segments[0];
   if (segment) segmentStat.textContent = segment.title;
   vehicleStat.textContent = ({ onFoot: '徒步', car: '战车', minecart: '矿车', plane: '战机', submarine: '潜艇' })[state.vehicle];
-  directionStat.textContent = '火力向前';
+  directionStat.textContent = `持续射击 · 射程 ${WEAPON_RANGE[state.player.weapon]}m`;
   const comboVisible = state.combo > 1 && state.comboTimer > 0;
   combo.classList.toggle('combo--visible', comboVisible);
   combo.setAttribute('aria-hidden', String(!comboVisible));
@@ -245,9 +259,34 @@ function updateHud(): void {
       announce(event.negative ? `⚠ ${event.label}` : event.label, event.color);
       a11yState.textContent = event.negative ? `受到负面效果：${event.label}` : `已获得强化：${event.label}`;
     }
+    if (event.type === 'gateCharged' && (event.converted || event.progress >= 1)) {
+      audio.gate(false);
+      const message = event.converted ? `净化成功 · ${event.label}` : `充能完成 · ${event.label}`;
+      announce(message, event.color);
+      a11yState.textContent = message;
+    }
     if (event.type === 'obstacleDestroyed') {
       announce('障碍击破', 0xffd955);
       a11yState.textContent = '前方障碍已击破';
+    }
+    if (event.type === 'obstacleReward') {
+      audio.gate(false);
+      announce(`击破奖励 · ${event.label}`, event.color);
+      a11yState.textContent = `获得击破奖励：${event.label}`;
+    }
+    if (event.type === 'hazardWarning') {
+      audio.hazardWarning();
+      announce(`⚠ ${event.label} · 立刻换道`, event.color);
+      a11yState.textContent = `${event.label}即将命中，立刻切换到没有红色标记的路线`;
+    }
+    if (event.type === 'hazardHit') {
+      announce(`${event.label}命中 -${event.amount}`, 0xff5b68);
+      a11yState.textContent = `${event.label}命中，受到${event.amount}点伤害`;
+    }
+    if (event.type === 'hazardAvoided') {
+      audio.upgrade();
+      announce(`完美闪避 +${event.score}`, event.color);
+      a11yState.textContent = `成功避开危险区域，获得${event.score}分`;
     }
     if (event.type === 'obstacleCollision') {
       audio.hurt();
@@ -279,25 +318,84 @@ function updateHud(): void {
   }
 }
 
+function formatRunTime(seconds: number): string {
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${String(minutes).padStart(2, '0')}:${String(totalSeconds % 60).padStart(2, '0')}`;
+}
+
+function animateResultScore(target: number): void {
+  window.cancelAnimationFrame(scoreAnimationFrame);
+  const startedAt = performance.now();
+  const duration = 850;
+  const update = (now: number): void => {
+    const progress = Math.min(1, (now - startedAt) / duration);
+    const eased = 1 - (1 - progress) ** 3;
+    scoreText.textContent = Math.round(target * eased).toLocaleString('zh-CN');
+    if (progress < 1) scoreAnimationFrame = window.requestAnimationFrame(update);
+  };
+  scoreAnimationFrame = window.requestAnimationFrame(update);
+}
+
 function showEnd(status: 'won' | 'lost'): void {
   const won = status === 'won';
+  resultTimers.splice(0).forEach((timer) => window.clearTimeout(timer));
   const currentLevel = LEVEL_SUMMARIES.find((level) => level.id === simulation.state.levelId);
   const currentIndex = LEVEL_SUMMARIES.findIndex((level) => level.id === simulation.state.levelId);
   const nextLevel = LEVEL_SUMMARIES[(currentIndex + 1) % LEVEL_SUMMARIES.length];
   resultIcon.textContent = won ? '🏆' : '💥';
   resultKicker.textContent = won ? `${currentLevel?.title ?? '关卡'} · BOSS 击破` : `${currentLevel?.title ?? '关卡'} · 冲刺中断`;
-  resultTitle.textContent = won ? '冲刺成功！' : '再强化一点！';
-  scoreText.textContent = simulation.state.score.toString();
+  resultTitle.textContent = won ? '任务完成' : '任务中断';
+  scoreText.textContent = '0';
   killsText.textContent = simulation.state.kills.toString();
   bestComboText.textContent = `×${simulation.state.bestCombo}`;
+  resultTimeText.textContent = formatRunTime(simulation.state.time);
+
+  const weaponCopy = {
+    pistol: { icon: '🔫', name: '战术手枪' },
+    rifle: { icon: '▰', name: '突击步枪' },
+    gatling: { icon: '✹', name: '重型加特林' },
+  }[simulation.state.player.weapon];
+  resultWeaponIcon.textContent = weaponCopy.icon;
+  resultWeaponName.textContent = weaponCopy.name;
+  resultBuildSummary.textContent = `${simulation.state.player.crewCount} 人 · ${simulation.state.player.projectileCount} 弹道 · ${Math.round(simulation.state.player.damage)} 伤害`;
+
+  const timeLimit = Math.ceil(simulation.state.levelEnd / 3.8);
+  const ratings = won
+    ? [simulation.state.time <= timeLimit, simulation.state.kills >= 6, simulation.state.bestCombo >= 2]
+    : [false, false, false];
+  const earnedStars = ratings.filter(Boolean).length;
+  resultStars.forEach((star, index) => star.classList.toggle('is-earned', ratings[index]));
+  resultMetricStars.forEach((star, index) => star.classList.toggle('is-earned', ratings[index]));
+  resultMetricRows.forEach((row, index) => row.classList.toggle('is-earned', ratings[index]));
+  resultMetricRows[0].setAttribute('aria-label', `冲刺用时 ${formatRunTime(simulation.state.time)}，三星目标 ${formatRunTime(timeLimit)}`);
+  resultMetricRows[1].setAttribute('aria-label', `击破数量 ${simulation.state.kills}，三星目标 6`);
+  resultMetricRows[2].setAttribute('aria-label', `最高连击 ${simulation.state.bestCombo}，三星目标 2`);
+  resultStarsGroup.setAttribute('aria-label', `本关评价：${earnedStars} 星`);
+  resultStarCount.textContent = `${earnedStars} / 3 ★`;
+
   if (won && nextLevel) selectLevel(nextLevel.id);
   else selectLevel(simulation.state.levelId);
   restartButton.textContent = won && nextLevel
     ? `下一关 · ${nextLevel.title}`
     : `重试 · ${currentLevel?.title ?? '当前关'}`;
+  endScreen.classList.remove('screen--won', 'screen--lost', 'result--revealing');
+  endScreen.classList.add(won ? 'screen--won' : 'screen--lost');
   endScreen.classList.add('screen--visible');
   endScreen.setAttribute('aria-hidden', 'false');
-  a11yState.textContent = won ? `胜利，本局得分 ${simulation.state.score}` : `游戏结束，本局得分 ${simulation.state.score}`;
+  void endScreen.offsetWidth;
+  endScreen.classList.add('result--revealing');
+  const scoreTimer = window.setTimeout(() => animateResultScore(simulation.state.score), won ? 1500 : 350);
+  resultTimers.push(scoreTimer);
+  if (won) {
+    ratings.forEach((earned, index) => {
+      if (!earned) return;
+      resultTimers.push(window.setTimeout(() => audio.resultStar(index), 520 + index * 430));
+    });
+  }
+  a11yState.textContent = won
+    ? `胜利，本关获得 ${earnedStars} 星，本局得分 ${simulation.state.score}`
+    : `游戏结束，本局得分 ${simulation.state.score}`;
   if (won) audio.victory();
   else audio.lose();
   window.setTimeout(() => restartButton.focus(), 250);
